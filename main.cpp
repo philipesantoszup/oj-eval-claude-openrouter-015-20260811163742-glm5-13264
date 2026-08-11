@@ -10,10 +10,15 @@ using namespace std;
 
 const string DATA_FILE = "storage.dat";
 const int BLOCK_SIZE = 4096;
-const int BUCKET_COUNT = 10007;  // Prime number for better distribution
+const int BUCKET_COUNT = 10007;
+
+struct Entry {
+    string key;
+    int value;
+};
 
 // Hash function
-uint32_t hash_func(const string& s) {
+inline uint32_t hash_func(const string& s) {
     uint32_t h = 5381;
     for (char c : s) {
         h = ((h << 5) + h) + (unsigned char)c;
@@ -21,12 +26,7 @@ uint32_t hash_func(const string& s) {
     return h % BUCKET_COUNT;
 }
 
-struct Entry {
-    string key;
-    int value;
-};
-
-// Initialize file with bucket headers
+// Initialize file
 void init_file() {
     ifstream test(DATA_FILE, ios::binary);
     if (test.good()) {
@@ -36,14 +36,18 @@ void init_file() {
     test.close();
 
     ofstream f(DATA_FILE, ios::binary);
-
-    // Header: first_free_block(4)
-    uint32_t first_free = BUCKET_COUNT * BLOCK_SIZE + 4;
+    // Header: first_free(4) + bucket offsets (BUCKET_COUNT * 4)
+    uint32_t first_free = 4 + BUCKET_COUNT * 4;
     f.write((char*)&first_free, 4);
 
-    // Initialize all bucket blocks as empty
     for (int i = 0; i < BUCKET_COUNT; i++) {
-        f.seekp(4 + i * BLOCK_SIZE);
+        uint32_t offset = first_free + i * BLOCK_SIZE;
+        f.write((char*)&offset, 4);
+    }
+
+    // Initialize bucket blocks
+    for (int i = 0; i < BUCKET_COUNT; i++) {
+        f.seekp(first_free + i * BLOCK_SIZE);
         uint16_t count = 0;
         f.write((char*)&count, 2);
     }
@@ -51,7 +55,7 @@ void init_file() {
     f.close();
 }
 
-// Read entries from a bucket
+// Read bucket entries
 vector<Entry> read_bucket(int bucket) {
     vector<Entry> entries;
 
@@ -61,17 +65,21 @@ vector<Entry> read_bucket(int bucket) {
         return entries;
     }
 
-    uint32_t offset = 4 + bucket * BLOCK_SIZE;
-    f.seekg(offset);
+    // Read bucket offset from directory
+    uint32_t offset;
+    f.seekg(4 + bucket * 4);
+    f.read((char*)&offset, 4);
 
+    // Read count
+    f.seekg(offset);
     uint16_t count;
     f.read((char*)&count, 2);
 
+    // Read entries
     for (int i = 0; i < count && f.good(); i++) {
         Entry e;
         uint8_t key_len;
         f.read((char*)&key_len, 1);
-        if (!f.good()) break;
         e.key.resize(key_len);
         f.read(&e.key[0], key_len);
         f.read((char*)&e.value, 4);
@@ -82,7 +90,7 @@ vector<Entry> read_bucket(int bucket) {
     return entries;
 }
 
-// Write entries to a bucket (single block)
+// Write bucket entries
 void write_bucket(int bucket, const vector<Entry>& entries) {
     fstream f(DATA_FILE, ios::in | ios::out | ios::binary);
     if (!f.good()) {
@@ -90,9 +98,13 @@ void write_bucket(int bucket, const vector<Entry>& entries) {
         return;
     }
 
-    uint32_t offset = 4 + bucket * BLOCK_SIZE;
-    f.seekp(offset);
+    // Read bucket offset
+    uint32_t offset;
+    f.seekg(4 + bucket * 4);
+    f.read((char*)&offset, 4);
 
+    // Write count and entries
+    f.seekp(offset);
     uint16_t count = entries.size();
     f.write((char*)&count, 2);
 
@@ -106,64 +118,43 @@ void write_bucket(int bucket, const vector<Entry>& entries) {
     f.close();
 }
 
-// Binary search for lower bound of key in sorted entries
-int lower_bound_key(const vector<Entry>& entries, const string& key) {
-    int lo = 0, hi = entries.size();
-    while (lo < hi) {
-        int mid = (lo + hi) / 2;
-        if (entries[mid].key < key) lo = mid + 1;
-        else hi = mid;
-    }
-    return lo;
-}
-
-// Find values for a key using binary search
+// Find values
 vector<int> find_values(const string& key) {
     vector<int> values;
 
     int bucket = hash_func(key);
     auto entries = read_bucket(bucket);
 
-    // Binary search for the key
-    int pos = lower_bound_key(entries, key);
-    while (pos < (int)entries.size() && entries[pos].key == key) {
-        values.push_back(entries[pos].value);
-        pos++;
+    for (const auto& e : entries) {
+        if (e.key == key) {
+            values.push_back(e.value);
+        }
     }
 
-    // Values are already sorted because entries are sorted
+    sort(values.begin(), values.end());
     return values;
 }
 
-// Check if entry exists using binary search
-bool entry_exists(const vector<Entry>& entries, const string& key, int value) {
-    int pos = lower_bound_key(entries, key);
-    while (pos < (int)entries.size() && entries[pos].key == key) {
-        if (entries[pos].value == value) return true;
-        if (entries[pos].value > value) break;  // Values are sorted
-        pos++;
-    }
-    return false;
-}
-
-// Insert entry maintaining sorted order
+// Insert entry
 void insert_entry(const string& key, int value) {
     int bucket = hash_func(key);
     auto entries = read_bucket(bucket);
 
     // Check duplicate
-    if (entry_exists(entries, key, value)) {
-        return;
+    for (const auto& e : entries) {
+        if (e.key == key && e.value == value) {
+            return;
+        }
     }
 
-    // Find insertion point
-    Entry new_entry{key, value};
-    auto it = lower_bound(entries.begin(), entries.end(), new_entry,
+    entries.push_back({key, value});
+
+    // Sort for binary search
+    sort(entries.begin(), entries.end(),
         [](const Entry& a, const Entry& b) {
             if (a.key != b.key) return a.key < b.key;
             return a.value < b.value;
         });
-    entries.insert(it, new_entry);
 
     write_bucket(bucket, entries);
 }
@@ -173,17 +164,14 @@ void delete_entry(const string& key, int value) {
     int bucket = hash_func(key);
     auto entries = read_bucket(bucket);
 
-    // Find and delete using binary search
-    int pos = lower_bound_key(entries, key);
-    while (pos < (int)entries.size() && entries[pos].key == key) {
-        if (entries[pos].value == value) {
-            entries.erase(entries.begin() + pos);
-            write_bucket(bucket, entries);
-            return;
+    for (auto it = entries.begin(); it != entries.end(); ++it) {
+        if (it->key == key && it->value == value) {
+            entries.erase(it);
+            break;
         }
-        if (entries[pos].value > value) break;  // Values are sorted
-        pos++;
     }
+
+    write_bucket(bucket, entries);
 }
 
 int main() {
