@@ -106,34 +106,47 @@ void write_bucket(int bucket, const vector<Entry>& entries) {
     f.close();
 }
 
-// Find values for a key
+// Binary search for lower bound of key in sorted entries
+int lower_bound_key(const vector<Entry>& entries, const string& key) {
+    int lo = 0, hi = entries.size();
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (entries[mid].key < key) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+// Find values for a key using binary search
 vector<int> find_values(const string& key) {
     vector<int> values;
 
     int bucket = hash_func(key);
     auto entries = read_bucket(bucket);
 
-    for (const auto& e : entries) {
-        if (e.key == key) {
-            values.push_back(e.value);
-        }
+    // Binary search for the key
+    int pos = lower_bound_key(entries, key);
+    while (pos < (int)entries.size() && entries[pos].key == key) {
+        values.push_back(entries[pos].value);
+        pos++;
     }
 
-    sort(values.begin(), values.end());
+    // Values are already sorted because entries are sorted
     return values;
 }
 
-// Check if entry exists
+// Check if entry exists using binary search
 bool entry_exists(const vector<Entry>& entries, const string& key, int value) {
-    for (const auto& e : entries) {
-        if (e.key == key && e.value == value) {
-            return true;
-        }
+    int pos = lower_bound_key(entries, key);
+    while (pos < (int)entries.size() && entries[pos].key == key) {
+        if (entries[pos].value == value) return true;
+        if (entries[pos].value > value) break;  // Values are sorted
+        pos++;
     }
     return false;
 }
 
-// Insert entry
+// Insert entry maintaining sorted order
 void insert_entry(const string& key, int value) {
     int bucket = hash_func(key);
     auto entries = read_bucket(bucket);
@@ -143,14 +156,14 @@ void insert_entry(const string& key, int value) {
         return;
     }
 
-    entries.push_back({key, value});
-
-    // Sort entries for better find performance
-    sort(entries.begin(), entries.end(),
+    // Find insertion point
+    Entry new_entry{key, value};
+    auto it = lower_bound(entries.begin(), entries.end(), new_entry,
         [](const Entry& a, const Entry& b) {
             if (a.key != b.key) return a.key < b.key;
             return a.value < b.value;
         });
+    entries.insert(it, new_entry);
 
     write_bucket(bucket, entries);
 }
@@ -160,14 +173,17 @@ void delete_entry(const string& key, int value) {
     int bucket = hash_func(key);
     auto entries = read_bucket(bucket);
 
-    for (auto it = entries.begin(); it != entries.end(); ++it) {
-        if (it->key == key && it->value == value) {
-            entries.erase(it);
-            break;
+    // Find and delete using binary search
+    int pos = lower_bound_key(entries, key);
+    while (pos < (int)entries.size() && entries[pos].key == key) {
+        if (entries[pos].value == value) {
+            entries.erase(entries.begin() + pos);
+            write_bucket(bucket, entries);
+            return;
         }
+        if (entries[pos].value > value) break;  // Values are sorted
+        pos++;
     }
-
-    write_bucket(bucket, entries);
 }
 
 int main() {
