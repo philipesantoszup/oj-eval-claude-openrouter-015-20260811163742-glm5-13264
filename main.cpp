@@ -10,7 +10,7 @@ using namespace std;
 
 const string DATA_FILE = "storage.dat";
 const int BLOCK_SIZE = 4096;
-const int BUCKET_COUNT = 10007;
+const int BUCKET_COUNT = 20011;  // Larger prime for better distribution
 
 struct Entry {
     string key;
@@ -118,6 +118,17 @@ void write_bucket(int bucket, const vector<Entry>& entries) {
     f.close();
 }
 
+// Binary search for lower bound
+int lower_bound_key(const vector<Entry>& entries, const string& key) {
+    int lo = 0, hi = entries.size();
+    while (lo < hi) {
+        int mid = (lo + hi) / 2;
+        if (entries[mid].key < key) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
 // Find values
 vector<int> find_values(const string& key) {
     vector<int> values;
@@ -125,14 +136,14 @@ vector<int> find_values(const string& key) {
     int bucket = hash_func(key);
     auto entries = read_bucket(bucket);
 
-    for (const auto& e : entries) {
-        if (e.key == key) {
-            values.push_back(e.value);
-        }
+    // Binary search since entries are sorted
+    int pos = lower_bound_key(entries, key);
+    while (pos < (int)entries.size() && entries[pos].key == key) {
+        values.push_back(entries[pos].value);
+        pos++;
     }
 
-    sort(values.begin(), values.end());
-    return values;
+    return values;  // Already sorted because entries are sorted
 }
 
 // Insert entry
@@ -140,21 +151,21 @@ void insert_entry(const string& key, int value) {
     int bucket = hash_func(key);
     auto entries = read_bucket(bucket);
 
-    // Check duplicate
-    for (const auto& e : entries) {
-        if (e.key == key && e.value == value) {
-            return;
-        }
-    }
-
-    entries.push_back({key, value});
-
-    // Sort for binary search
-    sort(entries.begin(), entries.end(),
+    // Binary search to find position (for duplicate check and insertion)
+    Entry target{key, value};
+    auto it = lower_bound(entries.begin(), entries.end(), target,
         [](const Entry& a, const Entry& b) {
             if (a.key != b.key) return a.key < b.key;
             return a.value < b.value;
         });
+
+    // Check if duplicate
+    if (it != entries.end() && it->key == key && it->value == value) {
+        return;  // Duplicate found
+    }
+
+    // Insert at sorted position
+    entries.insert(it, target);
 
     write_bucket(bucket, entries);
 }
@@ -164,14 +175,18 @@ void delete_entry(const string& key, int value) {
     int bucket = hash_func(key);
     auto entries = read_bucket(bucket);
 
-    for (auto it = entries.begin(); it != entries.end(); ++it) {
-        if (it->key == key && it->value == value) {
-            entries.erase(it);
-            break;
-        }
-    }
+    // Binary search to find entry
+    Entry target{key, value};
+    auto it = lower_bound(entries.begin(), entries.end(), target,
+        [](const Entry& a, const Entry& b) {
+            if (a.key != b.key) return a.key < b.key;
+            return a.value < b.value;
+        });
 
-    write_bucket(bucket, entries);
+    if (it != entries.end() && it->key == key && it->value == value) {
+        entries.erase(it);
+        write_bucket(bucket, entries);
+    }
 }
 
 int main() {
